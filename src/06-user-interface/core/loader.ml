@@ -9,7 +9,7 @@ module Loader (Backend : Backend.S) = struct
   }
 
   let load_primitive state prim =
-    let x = Ast.Variable.fresh (Language.Primitives.primitive_name prim) in
+    let x = Ast.TopDef.fresh (Language.Primitives.primitive_name prim) in
     let desugarer_state' = Desugarer.load_primitive state.desugarer x prim in
     let typechecker_state' =
       Typechecker.load_primitive state.typechecker x prim
@@ -71,9 +71,10 @@ module Loader (Backend : Backend.S) = struct
         { state with backend = backend_state' }
 
   let load_commands state cmds =
-    let desugarer_state', cmds' =
+    let desugarer_state', cmd_boxes =
       List.fold_map Desugarer.desugar_command state.desugarer cmds
     in
+    let cmds' = List.map Bindlib.unbox cmd_boxes in
     let state' = { state with desugarer = desugarer_state' } in
     List.fold_left execute_command state' cmds'
 
