@@ -238,7 +238,7 @@ let rec unify state = function
   | [] -> Ast.TyParamMap.empty
   | (t1, t2) :: eqs when t1 = t2 -> unify state eqs
   | (Ast.TyApply (ty_name1, args1), Ast.TyApply (ty_name2, args2)) :: eqs
-    when ty_name1 = ty_name2 && List.length args1 = List.length args2 ->
+    when ty_name1 = ty_name2 ->
       unify state (List.combine args1 args2 @ eqs)
   | (Ast.TyApply (ty_name, args), ty) :: eqs
     when is_transparent_type state ty_name ->

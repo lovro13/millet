@@ -13,12 +13,11 @@ let add_unique ~loc kind str symb string_map =
       | Some _ -> Error.syntax ~loc "%s %s defined multiple times." kind str)
     string_map
 
-type var_kind = Bound of Untyped.variable | TopDef of Untyped.top_def
-
 type state = {
   ty_names : Untyped.ty_name StringMap.t;
   ty_params : Untyped.ty_param StringMap.t;
-  variables : var_kind StringMap.t;
+  variables : Untyped.variable StringMap.t;
+  top_defs : Untyped.top_def StringMap.t;
   labels : Untyped.label StringMap.t;
 }
 
@@ -44,6 +43,7 @@ let initial_state =
       |> StringMap.add Sugared.list_ty_name Untyped.list_ty_name;
     ty_params = StringMap.empty;
     variables = StringMap.empty;
+    top_defs = StringMap.empty;
     labels =
       StringMap.empty
       |> StringMap.add Sugared.nil_label Untyped.nil_label
@@ -51,7 +51,6 @@ let initial_state =
   }
 
 let no_wrap comp = comp
-let compose_wrap outer inner comp = outer (inner comp)
 let boxed_expression ?(wrap = no_wrap) expr = { wrap; expr }
 
 module Boxed = struct
@@ -86,13 +85,14 @@ let find_symbol ~loc map name =
 
 let lookup_ty_name ~loc state = find_symbol ~loc state.ty_names
 let lookup_ty_param ~loc state = find_symbol ~loc state.ty_params
+let lookup_variable ~loc state = find_symbol ~loc state.variables
+let lookup_topdef ~loc state = find_symbol ~loc state.top_defs
 let lookup_label ~loc state = find_symbol ~loc state.labels
 
-let lookup_variable ~loc state name =
-  match StringMap.find_opt name state.variables with
-  | Some (Bound v) -> Bindlib.box_var v
-  | Some (TopDef s) -> Bindlib.box (Untyped.TopDef s)
-  | None -> Error.syntax ~loc "Unknown variable --%s--" name
+let lookup_term ~loc state name =
+  if StringMap.mem name state.variables then
+    Bindlib.box_var (lookup_variable ~loc state name)
+  else Bindlib.box (Untyped.TopDef (lookup_topdef ~loc state name))
 
 let rec desugar_ty state { Sugared.it = plain_ty; at = loc } =
   desugar_plain_ty ~loc state plain_ty
@@ -115,13 +115,10 @@ and desugar_plain_ty ~loc state = function
   | Sugared.TyConst c -> Untyped.TyConst c
 
 let rec desugar_pattern state vars { Sugared.it = pat; at = loc } =
-  desugar_plain_pattern ~loc state vars pat
-
-and desugar_plain_pattern ~loc state vars = function
+  match pat with
   | Sugared.PVar x ->
       let x_var = Bindlib.new_var (fun x -> Untyped.Var x) x in
-      let vars = add_unique ~loc "Variable" x x_var vars in
-      (vars, [ x_var ], Untyped.PVar)
+      (add_unique ~loc "Variable" x x_var vars, [ x_var ], Untyped.PVar)
   | Sugared.PAnnotated (pat, ty) ->
       let vars, binders, pat' = desugar_pattern state vars pat
       and ty' = desugar_ty state ty in
@@ -150,7 +147,6 @@ and desugar_plain_pattern ~loc state vars = function
   | Sugared.PNonbinding -> (vars, [], Untyped.PNonbinding)
 
 let add_bound_variables state vars =
-  let vars = StringMap.map (fun v -> Bound v) vars in
   {
     state with
     variables = StringMap.union (fun _ v _ -> Some v) vars state.variables;
@@ -162,22 +158,16 @@ let close_abstraction vars pat comp =
 
 let rec desugar_expression state { Sugared.it = term; at = loc } =
   match term with
-  | Sugared.Var x -> boxed_expression (lookup_variable ~loc state x)
+  | Sugared.Var x -> boxed_expression (lookup_term ~loc state x)
   | Sugared.Const k -> boxed_expression (Bindlib.box (Untyped.Const k))
   | Sugared.Annotated (term, ty) ->
       let expr = desugar_expression state term in
       let ty' = desugar_ty state ty in
       { expr with expr = Boxed.annotated expr.expr ty' }
   | Sugared.Tuple ts ->
-      let expressions =
-        List.fold_right
-          (fun t exprs -> desugar_expression state t :: exprs)
-          ts []
-      in
-      let wrap =
-        List.fold_right
-          (fun { wrap; _ } acc -> compose_wrap wrap acc)
-          expressions no_wrap
+      let expressions = List.map (desugar_expression state) ts in
+      let wrap comp =
+        List.fold_right (fun { wrap; _ } comp -> wrap comp) expressions comp
       in
       let exprs = List.map (fun { expr; _ } -> expr) expressions in
       boxed_expression ~wrap (Boxed.tuple exprs)
@@ -196,8 +186,7 @@ let rec desugar_expression state { Sugared.it = term; at = loc } =
   | ( Sugared.Apply _ | Sugared.Match _ | Sugared.Let _ | Sugared.LetRec _
     | Sugared.Conditional _ ) as term ->
       let comp = desugar_computation state { Sugared.it = term; at = loc } in
-      let b_name = "b" in
-      let b_var = Bindlib.new_var (fun x -> Untyped.Var x) b_name in
+      let b_var = Bindlib.new_var (fun x -> Untyped.Var x) "b" in
       let b_box = Bindlib.box_var b_var in
       let wrap c_cont =
         let abstraction = close_abstraction [| b_var |] Untyped.PVar c_cont in
@@ -243,7 +232,7 @@ and desugar_computation state { Sugared.it = term; at = loc } =
   | Sugared.LetRec (f, t1, t2) ->
       let f_var = Bindlib.new_var (fun x -> Untyped.Var x) f in
       let state_rec =
-        { state with variables = StringMap.add f (Bound f_var) state.variables }
+        { state with variables = StringMap.add f f_var state.variables }
       in
       let abstraction, annotations = desugar_recursive_function state_rec t1 in
       let rec_binder = Bindlib.bind_var f_var abstraction in
@@ -340,7 +329,7 @@ let desugar_command state { Sugared.it = cmd; at = loc } =
   | Sugared.TopLet (x, term) ->
       let x' = Untyped.TopDef.fresh x in
       let state' =
-        { state with variables = StringMap.add x (TopDef x') state.variables }
+        { state with top_defs = StringMap.add x x' state.top_defs }
       in
       let expr_box = desugar_pure_expression state' term in
       (state', Bindlib.box_apply (fun e -> Untyped.TopLet (x', e)) expr_box)
@@ -350,7 +339,7 @@ let desugar_command state { Sugared.it = cmd; at = loc } =
   | Sugared.TopLetRec (f, term) ->
       let f_var = Bindlib.new_var (fun x -> Untyped.Var x) f in
       let state_rec =
-        { state with variables = StringMap.add f (Bound f_var) state.variables }
+        { state with variables = StringMap.add f f_var state.variables }
       in
       let abstraction, annotations =
         desugar_recursive_function state_rec term
@@ -361,11 +350,11 @@ let desugar_command state { Sugared.it = cmd; at = loc } =
       in
       let f' = Untyped.TopDef.fresh f in
       let state' =
-        { state with variables = StringMap.add f (TopDef f') state.variables }
+        { state with top_defs = StringMap.add f f' state.top_defs }
       in
       ( state',
         Bindlib.box_apply (fun expr -> Untyped.TopLet (f', expr)) rec_expr )
 
 let load_primitive state x prim =
   let str = Language.Primitives.primitive_name prim in
-  { state with variables = StringMap.add str (TopDef x) state.variables }
+  { state with top_defs = StringMap.add str x state.top_defs }
