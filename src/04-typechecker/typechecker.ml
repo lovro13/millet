@@ -86,9 +86,9 @@ let infer_variant state lbl =
     | [] -> assert false
     | (_, (_, Ast.TyInline _)) :: ty_defs -> find ty_defs
     | (ty_name, (params, Ast.TySum variants)) :: ty_defs -> (
-        match List.assoc_opt lbl variants with
+        match List.find_opt (fun (lbl', _) -> Ast.same_label lbl lbl') variants with
         | None -> find ty_defs
-        | Some ty -> (ty_name, params, ty))
+        | Some (_, ty) -> (ty_name, params, ty))
   in
   let ty_name, params, ty =
     find (Ast.TyNameMap.bindings state.type_definitions)

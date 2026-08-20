@@ -94,19 +94,31 @@ let rec free_vars = function
         TyParamSet.empty tys
   | TyArrow (ty1, ty2) -> TyParamSet.union (free_vars ty1) (free_vars ty2)
 
-module Label = Symbol.Make ()
+type label_tag
+type label = label_tag Bindlib.var
 
-type label = Label.t
+let new_label name : label = Bindlib.new_var (fun _ -> assert false) name
+let same_label label1 label2 = Bindlib.uid_of label1 = Bindlib.uid_of label2
 
 let nil_label_string = "$nil$"
-let nil_label = Label.fresh nil_label_string
+let nil_label = new_label nil_label_string
 let cons_label_string = "$cons$"
-let cons_label = Label.fresh cons_label_string
+let cons_label = new_label cons_label_string
 
-module TopDef = Symbol.Make ()
-module TopDefMap = Map.Make (TopDef)
+type top_def_tag
+type top_def = top_def_tag Bindlib.var
 
-type top_def = TopDef.t
+let new_top_def name : top_def = Bindlib.new_var (fun _ -> assert false) name
+
+let same_top_def top_def1 top_def2 =
+  Bindlib.uid_of top_def1 = Bindlib.uid_of top_def2
+
+module TopDefMap = Map.Make (struct
+  type t = top_def
+
+  let compare top_def1 top_def2 =
+    Int.compare (Bindlib.uid_of top_def1) (Bindlib.uid_of top_def2)
+end)
 
 type pattern =
   | PVar
@@ -162,12 +174,12 @@ let rec print_pattern ?max_level vars p ppf =
     | PAnnotated (p, _ty) -> print_pattern_inner ?max_level p ppf
     | PConst c -> Const.print c ppf
     | PTuple lst -> Print.print_tuple print_pattern_inner lst ppf
-    | PVariant (lbl, None) when lbl = nil_label -> print "[]"
-    | PVariant (lbl, None) -> print "%t" (Label.print lbl)
-    | PVariant (lbl, Some (PTuple [ v1; v2 ])) when lbl = cons_label ->
+    | PVariant (lbl, None) when same_label lbl nil_label -> print "[]"
+    | PVariant (lbl, None) -> print "%s" (Bindlib.name_of lbl)
+    | PVariant (lbl, Some (PTuple [ v1; v2 ])) when same_label lbl cons_label ->
         print "%t::%t" (print_pattern_inner v1) (print_pattern_inner v2)
     | PVariant (lbl, Some p) ->
-        print ~at_level:1 "%t @[<hov>%t@]" (Label.print lbl)
+        print ~at_level:1 "%s @[<hov>%t@]" (Bindlib.name_of lbl)
           (print_pattern_inner p)
     | PNonbinding -> print "_"
   in
@@ -177,18 +189,18 @@ and print_expression ?max_level e ppf =
   let print ?at_level = Print.print ?max_level ?at_level ppf in
   match e with
   | Var x -> print "%s" (Bindlib.name_of x)
-  | TopDef x -> print "%t" (TopDef.print x)
+  | TopDef x -> print "%s" (Bindlib.name_of x)
   | Const c -> print "%t" (Const.print c)
   | Annotated (t, _ty) -> print_expression ?max_level t ppf
   | Tuple lst -> Print.print_tuple print_expression lst ppf
-  | Variant (lbl, None) when lbl = nil_label -> print "[]"
-  | Variant (lbl, None) -> print "%t" (Label.print lbl)
-  | Variant (lbl, Some (Tuple [ v1; v2 ])) when lbl = cons_label ->
+  | Variant (lbl, None) when same_label lbl nil_label -> print "[]"
+  | Variant (lbl, None) -> print "%s" (Bindlib.name_of lbl)
+  | Variant (lbl, Some (Tuple [ v1; v2 ])) when same_label lbl cons_label ->
       print ~at_level:1 "%t::%t"
         (print_expression ~max_level:0 v1)
         (print_expression ~max_level:1 v2)
   | Variant (lbl, Some e) ->
-      print ~at_level:1 "%t @[<hov>%t@]" (Label.print lbl)
+      print ~at_level:1 "%s @[<hov>%t@]" (Bindlib.name_of lbl)
         (print_expression ~max_level:0 e)
   | Lambda a -> print ~at_level:2 "fun %t" (print_abstraction a)
   | RecLambda b ->

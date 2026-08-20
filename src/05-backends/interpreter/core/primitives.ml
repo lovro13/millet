@@ -63,6 +63,42 @@ let rec comparable_expression = function
   | Lambda _ -> false
   | RecLambda _ -> false
 
+let comparison_to_int = function
+  | Const.Less -> -1
+  | Const.Equal -> 0
+  | Const.Greater -> 1
+
+let expression_tag = function
+  | Ast.Var _ -> 0
+  | Ast.TopDef _ -> 1
+  | Ast.Const _ -> 2
+  | Ast.Annotated _ -> 3
+  | Ast.Tuple _ -> 4
+  | Ast.Variant _ -> 5
+  | Ast.Lambda _ -> 6
+  | Ast.RecLambda _ -> 7
+
+let rec compare_expression expression1 expression2 =
+  match (expression1, expression2) with
+  | Ast.Var variable1, Ast.Var variable2 ->
+      Int.compare (Bindlib.uid_of variable1) (Bindlib.uid_of variable2)
+  | Ast.TopDef top_def1, Ast.TopDef top_def2 ->
+      Int.compare (Bindlib.uid_of top_def1) (Bindlib.uid_of top_def2)
+  | Ast.Const constant1, Ast.Const constant2 ->
+      comparison_to_int (Const.compare constant1 constant2)
+  | Ast.Annotated (expression1, ty1), Ast.Annotated (expression2, ty2) ->
+      let result = compare_expression expression1 expression2 in
+      if result = 0 then Stdlib.compare ty1 ty2 else result
+  | Ast.Tuple expressions1, Ast.Tuple expressions2 ->
+      List.compare compare_expression expressions1 expressions2
+  | Ast.Variant (label1, expression1), Ast.Variant (label2, expression2) ->
+      let result = Int.compare (Bindlib.uid_of label1) (Bindlib.uid_of label2) in
+      if result = 0 then Option.compare compare_expression expression1 expression2
+      else result
+  | (Ast.Lambda _ | Ast.RecLambda _), (Ast.Lambda _ | Ast.RecLambda _) ->
+      assert false
+  | _ -> Int.compare (expression_tag expression1) (expression_tag expression2)
+
 let comparison f =
   binary_function (fun e1 e2 ->
       if not (comparable_expression e1) then
@@ -74,12 +110,12 @@ let comparison f =
       else Ast.Return (Ast.Const (Const.Boolean (f e1 e2))))
 
 let primitive_function = function
-  | Primitives.CompareEq -> comparison ( = )
-  | Primitives.CompareLt -> comparison ( < )
-  | Primitives.CompareGt -> comparison ( > )
-  | Primitives.CompareLe -> comparison ( <= )
-  | Primitives.CompareGe -> comparison ( >= )
-  | Primitives.CompareNe -> comparison ( <> )
+  | Primitives.CompareEq -> comparison (fun e1 e2 -> compare_expression e1 e2 = 0)
+  | Primitives.CompareLt -> comparison (fun e1 e2 -> compare_expression e1 e2 < 0)
+  | Primitives.CompareGt -> comparison (fun e1 e2 -> compare_expression e1 e2 > 0)
+  | Primitives.CompareLe -> comparison (fun e1 e2 -> compare_expression e1 e2 <= 0)
+  | Primitives.CompareGe -> comparison (fun e1 e2 -> compare_expression e1 e2 >= 0)
+  | Primitives.CompareNe -> comparison (fun e1 e2 -> compare_expression e1 e2 <> 0)
   | Primitives.IntegerAdd -> int_int_to_int ( + )
   | Primitives.IntegerMul -> int_int_to_int ( * )
   | Primitives.IntegerSub -> int_int_to_int ( - )

@@ -49,8 +49,8 @@ let rec match_pattern_with_expression env pat expr =
       List.map2 (match_pattern_with_expression env) pats exprs |> List.concat
   | Ast.PVariant (label, pat) -> (
       match (pat, eval_variant env expr) with
-      | None, (label', None) when label = label' -> []
-      | Some pat, (label', Some expr) when label = label' ->
+      | None, (label', None) when Ast.same_label label label' -> []
+      | Some pat, (label', Some expr) when Ast.same_label label label' ->
           match_pattern_with_expression env pat expr
       | _, _ -> raise PatternMismatch)
   | Ast.PConst c when Const.equal c (eval_const env expr) -> []

@@ -187,14 +187,21 @@ let rec desugar_expression state { Sugared.it = term; at = loc } =
     | Sugared.Conditional _ ) as term ->
       let comp = desugar_computation state { Sugared.it = term; at = loc } in
       let b_var = Bindlib.new_var (fun x -> Untyped.Var x) "b" in
-      let b_box = Bindlib.box_var b_var in
       let wrap c_cont =
         let abstraction = close_abstraction [| b_var |] Untyped.PVar c_cont in
         Boxed.do_ comp abstraction
       in
+      let b_box = Bindlib.box_var b_var in
       boxed_expression ~wrap b_box
 
 and desugar_computation state { Sugared.it = term; at = loc } =
+  let if_then_else e c1 c2 =
+    let true_p = Untyped.PConst Const.of_true in
+    let false_p = Untyped.PConst Const.of_false in
+    let a1 = close_abstraction [||] true_p c1 in
+    let a2 = close_abstraction [||] false_p c2 in
+    Boxed.match_ e [ a1; a2 ]
+  in
   match term with
   | Sugared.Apply
       ({ it = Sugared.Var "(&&)"; _ }, { it = Sugared.Tuple [ t1; t2 ]; _ }) ->
@@ -203,7 +210,7 @@ and desugar_computation state { Sugared.it = term; at = loc } =
       let c2 =
         Boxed.return (Bindlib.box (Untyped.Const (Const.Boolean false)))
       in
-      left.wrap (desugar_if_then_else left.expr c1 c2)
+      left.wrap (if_then_else left.expr c1 c2)
   | Sugared.Apply
       ({ it = Sugared.Var "(||)"; _ }, { it = Sugared.Tuple [ t1; t2 ]; _ }) ->
       let left = desugar_expression state t1 in
@@ -211,7 +218,7 @@ and desugar_computation state { Sugared.it = term; at = loc } =
         Boxed.return (Bindlib.box (Untyped.Const (Const.Boolean true)))
       in
       let c2 = desugar_computation state t2 in
-      left.wrap (desugar_if_then_else left.expr c1 c2)
+      left.wrap (if_then_else left.expr c1 c2)
   | Sugared.Apply (t1, t2) ->
       let fn = desugar_expression state t1 in
       let arg = desugar_expression state t2 in
@@ -224,7 +231,7 @@ and desugar_computation state { Sugared.it = term; at = loc } =
       let expr = desugar_expression state t in
       let c1 = desugar_computation state t1 in
       let c2 = desugar_computation state t2 in
-      expr.wrap (desugar_if_then_else expr.expr c1 c2)
+      expr.wrap (if_then_else expr.expr c1 c2)
   | Sugared.Let (pat, t1, t2) ->
       let c1 = desugar_computation state t1 in
       let a = desugar_abstraction state (pat, t2) in
@@ -254,8 +261,7 @@ and desugar_abstraction state (pat, term) =
   close_abstraction (Array.of_list binders) pat' comp
 
 and desugar_function_abstraction state cases =
-  let x_name = "arg" in
-  let x_var = Bindlib.new_var (fun x -> Untyped.Var x) x_name in
+  let x_var = Bindlib.new_var (fun x -> Untyped.Var x) "arg" in
   let x_box = Bindlib.box_var x_var in
   let cases' = List.map (desugar_abstraction state) cases in
   let match_expr = Boxed.match_ x_box cases' in
@@ -270,13 +276,6 @@ and desugar_recursive_function state { Sugared.it = term; at = loc } =
   | Sugared.Lambda abstraction -> (desugar_abstraction state abstraction, [])
   | Sugared.Function cases -> (desugar_function_abstraction state cases, [])
   | _ -> Error.syntax ~loc "let rec expects a function expression"
-
-and desugar_if_then_else e c1 c2 =
-  let true_p = Untyped.PConst Const.of_true in
-  let false_p = Untyped.PConst Const.of_false in
-  let a1 = close_abstraction [||] true_p c1 in
-  let a2 = close_abstraction [||] false_p c2 in
-  Boxed.match_ e [ a1; a2 ]
 
 let desugar_pure_expression state term =
   let expression = (desugar_expression state term).expr in
@@ -301,7 +300,7 @@ let desugar_ty_def ~loc state = function
   | Sugared.TyInline ty -> (state, Untyped.TyInline (desugar_ty state ty))
   | Sugared.TySum variants ->
       let aux state (label, ty) =
-        let label' = Untyped.Label.fresh label in
+        let label' = Untyped.new_label label in
         let ty' = Option.map (desugar_ty state) ty in
         let state' = add_label ~loc state label label' in
         (state', (label', ty'))
@@ -327,7 +326,7 @@ let desugar_command state { Sugared.it = cmd; at = loc } =
       let state'', defs' = List.fold_right2 aux defs new_names (state', []) in
       (state'', Bindlib.box (Untyped.TyDef defs'))
   | Sugared.TopLet (x, term) ->
-      let x' = Untyped.TopDef.fresh x in
+      let x' = Untyped.new_top_def x in
       let state' =
         { state with top_defs = StringMap.add x x' state.top_defs }
       in
@@ -348,7 +347,7 @@ let desugar_command state { Sugared.it = cmd; at = loc } =
       let rec_expr =
         List.fold_left Boxed.annotated (Boxed.rec_lambda rec_binder) annotations
       in
-      let f' = Untyped.TopDef.fresh f in
+      let f' = Untyped.new_top_def f in
       let state' =
         { state with top_defs = StringMap.add f f' state.top_defs }
       in
